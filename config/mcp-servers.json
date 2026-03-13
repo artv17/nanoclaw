@@ -1,0 +1,6 @@
+{
+  "order-management": {
+    "type": "http",
+    "url": "https://order-management-mcp-server-1089020865493.us-central1.run.app/mcp"
+  }
+}

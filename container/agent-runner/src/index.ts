@@ -340,7 +340,13 @@ async function runQuery(
   const stream = new MessageStream();
   stream.push(prompt);
 
-  // Poll IPC for follow-up messages and _close sentinel during the query
+  // Poll IPC only for _close sentinel during the query.
+  // We intentionally do NOT consume follow-up messages during an active query:
+  // if we did, the SDK might process multiple user messages in a single turn
+  // producing only one output block, causing the host's per-job FIFO tracking
+  // to desync (one output resolves job A while job B stays pending forever).
+  // Messages accumulate in the IPC directory and are consumed by waitForIpcMessage
+  // after the current query, ensuring each message gets its own runQuery call and output.
   let ipcPolling = true;
   let closedDuringQuery = false;
   const pollIpcDuringQuery = () => {
@@ -352,11 +358,6 @@ async function runQuery(
       ipcPolling = false;
       return;
     }
-    const messages = drainIpcInput();
-    for (const text of messages) {
-      log(`Piping IPC message into active query (${text.length} chars)`);
-      stream.push(text);
-    }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
   setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
@@ -365,6 +366,26 @@ async function runQuery(
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
+
+  // Load external MCP servers from project config
+  // Main group has /workspace/project, others have /workspace/config
+  const mcpConfigPath = containerInput.isMain
+    ? '/workspace/project/config/mcp-servers.json'
+    : '/workspace/config/mcp-servers.json';
+  const mcpTokenPath = '/workspace/group/mcp-token.txt';
+  const externalMcpServers: Record<string, { type?: string; url: string; headers?: Record<string, string> }> =
+    fs.existsSync(mcpConfigPath)
+      ? JSON.parse(fs.readFileSync(mcpConfigPath, 'utf-8'))
+      : {};
+  if (Object.keys(externalMcpServers).length > 0) {
+    const token = fs.existsSync(mcpTokenPath) ? fs.readFileSync(mcpTokenPath, 'utf-8').trim() : null;
+    if (token) {
+      for (const cfg of Object.values(externalMcpServers)) {
+        cfg.headers = { ...cfg.headers, Authorization: `Bearer ${token}` };
+      }
+    }
+    log(`External MCP servers: ${Object.keys(externalMcpServers).join(', ')}`);
+  }
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
@@ -423,6 +444,7 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ...externalMcpServers,
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],

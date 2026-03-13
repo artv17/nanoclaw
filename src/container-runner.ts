@@ -111,6 +111,16 @@ function buildVolumeMounts(
         readonly: true,
       });
     }
+
+    // Config directory (MCP servers, etc.) — read-only for all groups
+    const configDir = path.join(projectRoot, 'config');
+    if (fs.existsSync(configDir)) {
+      mounts.push({
+        hostPath: configDir,
+        containerPath: '/workspace/config',
+        readonly: true,
+      });
+    }
   }
 
   // Per-group Claude sessions directory (isolated from other groups)
@@ -123,6 +133,11 @@ function buildVolumeMounts(
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
+  const mcpConfigFile = path.join(process.cwd(), 'config', 'mcp-servers.json');
+  const mcpServers: Record<string, unknown> = fs.existsSync(mcpConfigFile)
+    ? (JSON.parse(fs.readFileSync(mcpConfigFile, 'utf-8')) as Record<string, unknown>)
+    : {};
+
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(
       settingsFile,
@@ -139,11 +154,17 @@ function buildVolumeMounts(
             // https://code.claude.com/docs/en/memory#manage-auto-memory
             CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
           },
+          ...(Object.keys(mcpServers).length > 0 && { mcpServers }),
         },
         null,
         2,
       ) + '\n',
     );
+  } else {
+    // Always update mcpServers to keep token and config in sync
+    const existing = JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) as Record<string, unknown>;
+    const updated = { ...existing, ...(Object.keys(mcpServers).length > 0 && { mcpServers }) };
+    fs.writeFileSync(settingsFile, JSON.stringify(updated, null, 2) + '\n');
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
