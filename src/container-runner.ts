@@ -135,7 +135,10 @@ function buildVolumeMounts(
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   const mcpConfigFile = path.join(process.cwd(), 'config', 'mcp-servers.json');
   const mcpServers: Record<string, unknown> = fs.existsSync(mcpConfigFile)
-    ? (JSON.parse(fs.readFileSync(mcpConfigFile, 'utf-8')) as Record<string, unknown>)
+    ? (JSON.parse(fs.readFileSync(mcpConfigFile, 'utf-8')) as Record<
+        string,
+        unknown
+      >)
     : {};
 
   if (!fs.existsSync(settingsFile)) {
@@ -162,8 +165,13 @@ function buildVolumeMounts(
     );
   } else {
     // Always update mcpServers to keep token and config in sync
-    const existing = JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) as Record<string, unknown>;
-    const updated = { ...existing, ...(Object.keys(mcpServers).length > 0 && { mcpServers }) };
+    const existing = JSON.parse(
+      fs.readFileSync(settingsFile, 'utf-8'),
+    ) as Record<string, unknown>;
+    const updated = {
+      ...existing,
+      ...(Object.keys(mcpServers).length > 0 && { mcpServers }),
+    };
     fs.writeFileSync(settingsFile, JSON.stringify(updated, null, 2) + '\n');
   }
 

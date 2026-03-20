@@ -38,9 +38,7 @@ export class ApiChannel implements Channel {
   }
 
   async connect(): Promise<void> {
-    this.server = http.createServer((req, res) =>
-      this.handleRequest(req, res),
-    );
+    this.server = http.createServer((req, res) => this.handleRequest(req, res));
     await new Promise<void>((resolve, reject) => {
       this.server!.listen(this.port, '0.0.0.0', () => {
         logger.info({ port: this.port }, 'API channel listening');
@@ -62,7 +60,10 @@ export class ApiChannel implements Channel {
   async sendMessage(jid: string, text: string): Promise<void> {
     const queue = this.pendingByJid.get(jid);
     if (!queue || queue.length === 0) {
-      logger.warn({ jid }, 'API channel: sendMessage called but no pending job');
+      logger.warn(
+        { jid },
+        'API channel: sendMessage called but no pending job',
+      );
       return;
     }
     const jobId = queue.shift()!;
@@ -86,7 +87,8 @@ export class ApiChannel implements Channel {
   private folderForUserId(userId: string): string {
     // Sanitize user_id to a valid group folder name
     let sanitized = userId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 55);
-    if (!/^[A-Za-z0-9]/.test(sanitized)) sanitized = 'u' + sanitized.slice(0, 54);
+    if (!/^[A-Za-z0-9]/.test(sanitized))
+      sanitized = 'u' + sanitized.slice(0, 54);
     return `api_${sanitized}`;
   }
 
