@@ -82,6 +82,14 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+    CREATE TABLE IF NOT EXISTS api_jobs (
+      job_id TEXT PRIMARY KEY,
+      jid TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      response TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_jobs_jid ON api_jobs(jid, status);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -632,6 +640,58 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- API job accessors ---
+
+export interface ApiJob {
+  jobId: string;
+  jid: string;
+  status: 'pending' | 'done';
+  response?: string;
+  createdAt: string;
+}
+
+export function createApiJob(jobId: string, jid: string, createdAt: string): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO api_jobs (job_id, jid, status, created_at) VALUES (?, ?, 'pending', ?)`,
+  ).run(jobId, jid, createdAt);
+}
+
+export function resolveApiJob(jobId: string, response: string): void {
+  db.prepare(
+    `UPDATE api_jobs SET status = 'done', response = ? WHERE job_id = ?`,
+  ).run(response, jobId);
+}
+
+export function getApiJob(jobId: string): ApiJob | undefined {
+  const row = db
+    .prepare(`SELECT job_id, jid, status, response, created_at FROM api_jobs WHERE job_id = ?`)
+    .get(jobId) as
+    | { job_id: string; jid: string; status: string; response: string | null; created_at: string }
+    | undefined;
+  if (!row) return undefined;
+  return {
+    jobId: row.job_id,
+    jid: row.jid,
+    status: row.status as 'pending' | 'done',
+    response: row.response ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+export function getPendingApiJobs(): Array<{ jobId: string; jid: string }> {
+  const rows = db
+    .prepare(
+      `SELECT job_id, jid FROM api_jobs WHERE status = 'pending' ORDER BY created_at`,
+    )
+    .all() as Array<{ job_id: string; jid: string }>;
+  return rows.map((r) => ({ jobId: r.job_id, jid: r.jid }));
+}
+
+export function deleteOldApiJobs(olderThanHours: number = 24): void {
+  const cutoff = new Date(Date.now() - olderThanHours * 3600 * 1000).toISOString();
+  db.prepare(`DELETE FROM api_jobs WHERE created_at < ? AND status = 'done'`).run(cutoff);
 }
 
 // --- JSON migration ---

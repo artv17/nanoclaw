@@ -575,6 +575,7 @@ async function main(): Promise<void> {
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
     registerGroup,
+    enqueueCheck: (jid: string) => queue.enqueueMessageCheck(jid),
   };
 
   // Create and connect all registered channels.

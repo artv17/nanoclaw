@@ -10,6 +10,7 @@ export interface ChannelOpts {
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup?: (jid: string, group: RegisteredGroup) => void;
+  enqueueCheck?: (jid: string) => void;
 }
 
 export type ChannelFactory = (opts: ChannelOpts) => Channel | null;
