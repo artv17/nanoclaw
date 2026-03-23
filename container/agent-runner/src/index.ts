@@ -478,6 +478,10 @@ async function runQuery(
         result: textResult || null,
         newSessionId
       });
+      // End the stream so the for-await loop exits after this turn.
+      // Follow-up messages are handled via waitForIpcMessage() + a new runQuery() call.
+      // This ensures each user message gets its own query and its own output block.
+      stream.end();
     }
   }
 
