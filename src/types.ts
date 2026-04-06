@@ -90,6 +90,8 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: called when the agent query for a JID completes (all responses sent).
+  onQueryComplete?(jid: string): void;
 }
 
 // Callback type that channels use to deliver inbound messages

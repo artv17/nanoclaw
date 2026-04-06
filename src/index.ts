@@ -231,6 +231,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
 
     if (result.status === 'success') {
+      channel.onQueryComplete?.(chatJid);
       queue.notifyIdle(chatJid);
     }
 

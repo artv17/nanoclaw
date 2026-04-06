@@ -147,6 +147,13 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* columns already exist */
   }
+
+  // Add messages column to api_jobs if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE api_jobs ADD COLUMN messages TEXT DEFAULT '[]'`);
+  } catch {
+    /* column already exists */
+  }
 }
 
 export function initDatabase(): void {
@@ -647,35 +654,59 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
 export interface ApiJob {
   jobId: string;
   jid: string;
-  status: 'pending' | 'done';
-  response?: string;
+  status: 'pending' | 'in_progress' | 'done';
+  messages: string[];
   createdAt: string;
 }
 
-export function createApiJob(jobId: string, jid: string, createdAt: string): void {
+export function createApiJob(
+  jobId: string,
+  jid: string,
+  createdAt: string,
+): void {
   db.prepare(
-    `INSERT OR IGNORE INTO api_jobs (job_id, jid, status, created_at) VALUES (?, ?, 'pending', ?)`,
+    `INSERT OR IGNORE INTO api_jobs (job_id, jid, status, messages, created_at) VALUES (?, ?, 'pending', '[]', ?)`,
   ).run(jobId, jid, createdAt);
 }
 
-export function resolveApiJob(jobId: string, response: string): void {
+export function appendApiJobMessage(jobId: string, message: string): void {
+  const row = db
+    .prepare(`SELECT messages FROM api_jobs WHERE job_id = ?`)
+    .get(jobId) as { messages: string | null } | undefined;
+  if (!row) return;
+  const existing: string[] = JSON.parse(row.messages || '[]');
+  existing.push(message);
   db.prepare(
-    `UPDATE api_jobs SET status = 'done', response = ? WHERE job_id = ?`,
-  ).run(response, jobId);
+    `UPDATE api_jobs SET status = 'in_progress', messages = ? WHERE job_id = ?`,
+  ).run(JSON.stringify(existing), jobId);
+}
+
+export function finalizeApiJob(jobId: string): void {
+  db.prepare(`UPDATE api_jobs SET status = 'done' WHERE job_id = ?`).run(
+    jobId,
+  );
 }
 
 export function getApiJob(jobId: string): ApiJob | undefined {
   const row = db
-    .prepare(`SELECT job_id, jid, status, response, created_at FROM api_jobs WHERE job_id = ?`)
+    .prepare(
+      `SELECT job_id, jid, status, messages, created_at FROM api_jobs WHERE job_id = ?`,
+    )
     .get(jobId) as
-    | { job_id: string; jid: string; status: string; response: string | null; created_at: string }
+    | {
+        job_id: string;
+        jid: string;
+        status: string;
+        messages: string | null;
+        created_at: string;
+      }
     | undefined;
   if (!row) return undefined;
   return {
     jobId: row.job_id,
     jid: row.jid,
-    status: row.status as 'pending' | 'done',
-    response: row.response ?? undefined,
+    status: row.status as 'pending' | 'in_progress' | 'done',
+    messages: JSON.parse(row.messages || '[]'),
     createdAt: row.created_at,
   };
 }
@@ -683,15 +714,19 @@ export function getApiJob(jobId: string): ApiJob | undefined {
 export function getPendingApiJobs(): Array<{ jobId: string; jid: string }> {
   const rows = db
     .prepare(
-      `SELECT job_id, jid FROM api_jobs WHERE status = 'pending' ORDER BY created_at`,
+      `SELECT job_id, jid FROM api_jobs WHERE status IN ('pending', 'in_progress') ORDER BY created_at`,
     )
     .all() as Array<{ job_id: string; jid: string }>;
   return rows.map((r) => ({ jobId: r.job_id, jid: r.jid }));
 }
 
 export function deleteOldApiJobs(olderThanHours: number = 24): void {
-  const cutoff = new Date(Date.now() - olderThanHours * 3600 * 1000).toISOString();
-  db.prepare(`DELETE FROM api_jobs WHERE created_at < ? AND status = 'done'`).run(cutoff);
+  const cutoff = new Date(
+    Date.now() - olderThanHours * 3600 * 1000,
+  ).toISOString();
+  db.prepare(
+    `DELETE FROM api_jobs WHERE created_at < ? AND status = 'done'`,
+  ).run(cutoff);
 }
 
 // --- JSON migration ---

@@ -5,11 +5,12 @@ import path from 'path';
 
 import { ASSISTANT_NAME } from '../config.js';
 import {
+  appendApiJobMessage,
   createApiJob,
   deleteOldApiJobs,
+  finalizeApiJob,
   getPendingApiJobs,
   getApiJob,
-  resolveApiJob,
 } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
@@ -44,7 +45,10 @@ export class ApiChannel implements Channel {
       this.pendingByJid.get(jid)!.push(jobId);
     }
     if (pending.length > 0) {
-      logger.info({ count: pending.length }, 'API channel: restored pending jobs from DB');
+      logger.info(
+        { count: pending.length },
+        'API channel: restored pending jobs from DB',
+      );
     }
 
     this.server = http.createServer((req, res) => this.handleRequest(req, res));
@@ -78,11 +82,18 @@ export class ApiChannel implements Channel {
       );
       return;
     }
+    const jobId = queue[0]; // peek — don't pop until query completes
+    appendApiJobMessage(jobId, text);
+    logger.info({ jid, jobId }, 'API channel: message appended to job');
+  }
+
+  onQueryComplete(jid: string): void {
+    const queue = this.pendingByJid.get(jid);
+    if (!queue || queue.length === 0) return;
     const jobId = queue.shift()!;
     if (queue.length === 0) this.pendingByJid.delete(jid);
-
-    resolveApiJob(jobId, text);
-    logger.info({ jid, jobId }, 'API channel: job resolved');
+    finalizeApiJob(jobId);
+    logger.info({ jid, jobId }, 'API channel: job finalized');
   }
 
   async disconnect(): Promise<void> {
@@ -116,11 +127,7 @@ export class ApiChannel implements Channel {
     fs.writeFileSync(path.join(groupDir, 'mcp-token.txt'), token, 'utf-8');
   }
 
-  private ensureUserGroup(
-    userId: string,
-    jid: string,
-    folder: string,
-  ): void {
+  private ensureUserGroup(userId: string, jid: string, folder: string): void {
     const now = new Date().toISOString();
     // Always ensure the chat metadata record exists (required by FK on messages table)
     this.opts.onChatMetadata(jid, now, userId, 'api', false);
@@ -200,7 +207,9 @@ export class ApiChannel implements Channel {
           (typeof session_id !== 'string' || !session_id.trim())
         ) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'session_id must be a non-empty string' }));
+          res.end(
+            JSON.stringify({ error: 'session_id must be a non-empty string' }),
+          );
           return;
         }
         if (!message || typeof message !== 'string' || !message.trim()) {
@@ -265,8 +274,13 @@ export class ApiChannel implements Channel {
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
+    const messages = job.messages ?? [];
+    const response = messages.length > 0 ? messages[messages.length - 1] : null;
     if (job.status === 'done') {
-      res.end(JSON.stringify({ status: 'done', response: job.response }));
+      res.end(JSON.stringify({ status: 'done', messages, response }));
+    } else if (messages.length > 0) {
+      // In-progress but has intermediate messages — return them so caller can act
+      res.end(JSON.stringify({ status: 'in_progress', messages, response }));
     } else {
       res.end(JSON.stringify({ status: 'pending' }));
     }
