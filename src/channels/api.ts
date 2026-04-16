@@ -46,7 +46,10 @@ export class ApiChannel implements Channel {
     // responses meant for new jobs posted after the restart.
     const stale = getPendingApiJobs();
     for (const { jobId } of stale) {
-      appendApiJobMessage(jobId, '[Service was restarted before this request could be completed. Please retry.]');
+      appendApiJobMessage(
+        jobId,
+        '[Service was restarted before this request could be completed. Please retry.]',
+      );
       finalizeApiJob(jobId);
     }
     if (stale.length > 0) {
@@ -313,9 +316,7 @@ export class ApiChannel implements Channel {
     );
 
     const nextSince =
-      items.length > 0
-        ? items[items.length - 1].updatedAt
-        : since;
+      items.length > 0 ? items[items.length - 1].updatedAt : since;
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ messages, next_since: nextSince }));

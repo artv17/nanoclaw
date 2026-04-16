@@ -697,7 +697,9 @@ export function appendApiJobMessage(jobId: string, message: string): void {
 }
 
 export function finalizeApiJob(jobId: string): void {
-  db.prepare(`UPDATE api_jobs SET status = 'done', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE job_id = ?`).run(jobId);
+  db.prepare(
+    `UPDATE api_jobs SET status = 'done', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE job_id = ?`,
+  ).run(jobId);
 }
 
 export function getApiJob(jobId: string): ApiJob | undefined {
@@ -775,7 +777,8 @@ export function getApiMessagesFeed(
   return rows.map((r) => {
     const withoutPrefix = r.jid.slice('api:'.length); // "{userId}:{sessionId}" or "{userId}"
     const colonIdx = withoutPrefix.indexOf(':');
-    const userId = colonIdx === -1 ? withoutPrefix : withoutPrefix.slice(0, colonIdx);
+    const userId =
+      colonIdx === -1 ? withoutPrefix : withoutPrefix.slice(0, colonIdx);
     const sid = colonIdx === -1 ? undefined : withoutPrefix.slice(colonIdx + 1);
     return {
       jobId: r.job_id,
