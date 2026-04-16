@@ -27,6 +27,8 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  llmModel?: string;
+  geminiApiKey?: string;
 }
 
 interface ContainerOutput {
@@ -478,16 +480,43 @@ async function runQuery(
         result: textResult || null,
         newSessionId
       });
-      // End the stream so the for-await loop exits after this turn.
-      // Follow-up messages are handled via waitForIpcMessage() + a new runQuery() call.
-      // This ensures each user message gets its own query and its own output block.
+      // Break out of the for-await loop immediately after the result.
+      // The SDK's output iterable may not close on its own when stream.end() is called,
+      // so we break explicitly. Follow-up messages arrive via waitForIpcMessage() and
+      // trigger a new runQuery() call, ensuring each message gets its own output block.
       stream.end();
+      break;
     }
   }
 
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
+}
+
+async function runGeminiQuery(
+  prompt: string,
+  model: string,
+  apiKey: string,
+): Promise<string> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const body = JSON.stringify({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { temperature: 1, maxOutputTokens: 8192 },
+  });
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Gemini API error ${response.status}: ${errText}`);
+  }
+  const data = await response.json() as {
+    candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+  };
+  return data.candidates[0]?.content?.parts?.map((p: { text: string }) => p.text).join('') || '';
 }
 
 async function main(): Promise<void> {
@@ -505,6 +534,29 @@ async function main(): Promise<void> {
       error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`
     });
     process.exit(1);
+  }
+
+  // Gemini path: bypass Claude SDK entirely and call Gemini REST API directly.
+  if (containerInput.llmModel?.startsWith('gemini-')) {
+    if (!containerInput.geminiApiKey) {
+      writeOutput({ status: 'error', result: null, error: 'GEMINI_API_KEY not configured. Add it to .env.' });
+      process.exit(1);
+    }
+    try {
+      let prompt = containerInput.prompt;
+      if (containerInput.isScheduledTask) {
+        prompt = `[SCHEDULED TASK]\n\n${prompt}`;
+      }
+      log(`Running Gemini query with model: ${containerInput.llmModel}`);
+      const result = await runGeminiQuery(prompt, containerInput.llmModel, containerInput.geminiApiKey);
+      writeOutput({ status: 'success', result });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      log(`Gemini error: ${errorMessage}`);
+      writeOutput({ status: 'error', result: null, error: errorMessage });
+      process.exit(1);
+    }
+    return;
   }
 
   // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.

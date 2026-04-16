@@ -41,6 +41,8 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  llmModel?: string;
+  geminiApiKey?: string;
 }
 
 export interface ContainerOutput {

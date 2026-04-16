@@ -92,6 +92,8 @@ export interface Channel {
   syncGroups?(force: boolean): Promise<void>;
   // Optional: called when the agent query for a JID completes (all responses sent).
   onQueryComplete?(jid: string): void;
+  // Optional: return a model override for this JID (e.g. "gemini-2.5-pro").
+  modelOverrideForJid?(jid: string): string | undefined;
 }
 
 // Callback type that channels use to deliver inbound messages

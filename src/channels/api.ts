@@ -9,8 +9,9 @@ import {
   createApiJob,
   deleteOldApiJobs,
   finalizeApiJob,
-  getPendingApiJobs,
   getApiJob,
+  getApiMessagesFeed,
+  getPendingApiJobs,
 } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
@@ -30,6 +31,8 @@ export class ApiChannel implements Channel {
 
   // jid → FIFO queue of pending job_ids (rebuilt from DB on connect)
   private pendingByJid = new Map<string, string[]>();
+  // jid → model override for the current pending job (e.g. "gemini-2.5-pro")
+  private modelByJid = new Map<string, string>();
 
   constructor(apiKey: string, port: number, opts: ChannelOpts) {
     this.apiKey = apiKey;
@@ -38,16 +41,18 @@ export class ApiChannel implements Channel {
   }
 
   async connect(): Promise<void> {
-    // Rebuild pending queue from persisted DB state (survives restarts)
-    const pending = getPendingApiJobs();
-    for (const { jobId, jid } of pending) {
-      if (!this.pendingByJid.has(jid)) this.pendingByJid.set(jid, []);
-      this.pendingByJid.get(jid)!.push(jobId);
+    // Fail stale jobs from before restart — do NOT restore them to the live queue.
+    // If we restored them, they would sit at the front of pendingByJid and intercept
+    // responses meant for new jobs posted after the restart.
+    const stale = getPendingApiJobs();
+    for (const { jobId } of stale) {
+      appendApiJobMessage(jobId, '[Service was restarted before this request could be completed. Please retry.]');
+      finalizeApiJob(jobId);
     }
-    if (pending.length > 0) {
+    if (stale.length > 0) {
       logger.info(
-        { count: pending.length },
-        'API channel: restored pending jobs from DB',
+        { count: stale.length },
+        'API channel: failed stale jobs from previous run',
       );
     }
 
@@ -91,9 +96,16 @@ export class ApiChannel implements Channel {
     const queue = this.pendingByJid.get(jid);
     if (!queue || queue.length === 0) return;
     const jobId = queue.shift()!;
-    if (queue.length === 0) this.pendingByJid.delete(jid);
+    if (queue.length === 0) {
+      this.pendingByJid.delete(jid);
+      this.modelByJid.delete(jid);
+    }
     finalizeApiJob(jobId);
     logger.info({ jid, jobId }, 'API channel: job finalized');
+  }
+
+  modelOverrideForJid(jid: string): string | undefined {
+    return this.modelByJid.get(jid);
   }
 
   async disconnect(): Promise<void> {
@@ -173,6 +185,8 @@ export class ApiChannel implements Channel {
     ) {
       const jobId = url.pathname.slice('/api/message/'.length);
       this.handleGetMessage(jobId, res);
+    } else if (req.method === 'GET' && url.pathname === '/api/messages') {
+      this.handleGetMessagesFeed(url, res);
     } else {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
@@ -194,8 +208,9 @@ export class ApiChannel implements Channel {
           session_id?: string;
           message?: string;
           token?: string;
+          llm_model?: string;
         };
-        const { user_id, session_id, message, token } = parsed;
+        const { user_id, session_id, message, token, llm_model } = parsed;
 
         if (!user_id || typeof user_id !== 'string' || !user_id.trim()) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -229,11 +244,23 @@ export class ApiChannel implements Channel {
         const jobId = crypto.randomUUID();
         const now = new Date().toISOString();
 
+        // Extract tenant claim from JWT token (decode payload, no verification needed)
+        let tenantId: string | undefined;
+        try {
+          const payload = JSON.parse(
+            Buffer.from(token.split('.')[1], 'base64url').toString('utf-8'),
+          );
+          tenantId = payload.tenant ?? undefined;
+        } catch {
+          // token not a JWT or no tenant claim — leave undefined
+        }
+
         // Persist job to DB before enqueuing (survives restarts)
-        createApiJob(jobId, jid, now);
+        createApiJob(jobId, jid, now, tenantId);
 
         if (!this.pendingByJid.has(jid)) this.pendingByJid.set(jid, []);
         this.pendingByJid.get(jid)!.push(jobId);
+        if (llm_model) this.modelByJid.set(jid, llm_model);
 
         this.ensureUserGroup(user_id, jid, folder);
         this.persistToken(folder, token);
@@ -265,6 +292,35 @@ export class ApiChannel implements Channel {
     });
   }
 
+  private handleGetMessagesFeed(url: URL, res: http.ServerResponse): void {
+    const since = url.searchParams.get('since') || new Date(0).toISOString();
+    const sessionId = url.searchParams.get('session_id') || undefined;
+
+    const items = getApiMessagesFeed(since, sessionId);
+
+    const messages = items.flatMap((item) =>
+      item.messages.map((content, idx) => ({
+        message_id: `${item.jobId}_${idx}`,
+        job_id: item.jobId,
+        tenant_id: item.tenantId,
+        user_id: item.userId,
+        session_id: item.sessionId,
+        message_index: idx,
+        content,
+        status: item.status,
+        updated_at: item.updatedAt,
+      })),
+    );
+
+    const nextSince =
+      items.length > 0
+        ? items[items.length - 1].updatedAt
+        : since;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ messages, next_since: nextSince }));
+  }
+
   private handleGetMessage(jobId: string, res: http.ServerResponse): void {
     const job = getApiJob(jobId);
     if (!job) {
@@ -274,12 +330,16 @@ export class ApiChannel implements Channel {
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    const messages = job.messages ?? [];
+    const rawMessages = job.messages ?? [];
+    const messages = rawMessages.map((content, idx) => ({
+      message_id: `${jobId}_${idx}`,
+      message_index: idx,
+      content,
+    }));
     const response = messages.length > 0 ? messages[messages.length - 1] : null;
     if (job.status === 'done') {
       res.end(JSON.stringify({ status: 'done', messages, response }));
     } else if (messages.length > 0) {
-      // In-progress but has intermediate messages — return them so caller can act
       res.end(JSON.stringify({ status: 'in_progress', messages, response }));
     } else {
       res.end(JSON.stringify({ status: 'pending' }));

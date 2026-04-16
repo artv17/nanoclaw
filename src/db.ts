@@ -154,6 +154,20 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  // Add updated_at column to api_jobs for feed polling
+  try {
+    database.exec(`ALTER TABLE api_jobs ADD COLUMN updated_at TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Add tenant_id column to api_jobs
+  try {
+    database.exec(`ALTER TABLE api_jobs ADD COLUMN tenant_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
 }
 
 export function initDatabase(): void {
@@ -663,10 +677,11 @@ export function createApiJob(
   jobId: string,
   jid: string,
   createdAt: string,
+  tenantId?: string,
 ): void {
   db.prepare(
-    `INSERT OR IGNORE INTO api_jobs (job_id, jid, status, messages, created_at) VALUES (?, ?, 'pending', '[]', ?)`,
-  ).run(jobId, jid, createdAt);
+    `INSERT OR IGNORE INTO api_jobs (job_id, jid, status, messages, created_at, tenant_id) VALUES (?, ?, 'pending', '[]', ?, ?)`,
+  ).run(jobId, jid, createdAt, tenantId ?? null);
 }
 
 export function appendApiJobMessage(jobId: string, message: string): void {
@@ -677,14 +692,12 @@ export function appendApiJobMessage(jobId: string, message: string): void {
   const existing: string[] = JSON.parse(row.messages || '[]');
   existing.push(message);
   db.prepare(
-    `UPDATE api_jobs SET status = 'in_progress', messages = ? WHERE job_id = ?`,
+    `UPDATE api_jobs SET status = 'in_progress', messages = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE job_id = ?`,
   ).run(JSON.stringify(existing), jobId);
 }
 
 export function finalizeApiJob(jobId: string): void {
-  db.prepare(`UPDATE api_jobs SET status = 'done' WHERE job_id = ?`).run(
-    jobId,
-  );
+  db.prepare(`UPDATE api_jobs SET status = 'done', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE job_id = ?`).run(jobId);
 }
 
 export function getApiJob(jobId: string): ApiJob | undefined {
@@ -718,6 +731,62 @@ export function getPendingApiJobs(): Array<{ jobId: string; jid: string }> {
     )
     .all() as Array<{ job_id: string; jid: string }>;
   return rows.map((r) => ({ jobId: r.job_id, jid: r.jid }));
+}
+
+export interface ApiMessageFeedItem {
+  jobId: string;
+  tenantId: string | undefined;
+  sessionId: string | undefined;
+  userId: string;
+  messages: string[];
+  status: 'in_progress' | 'done';
+  updatedAt: string;
+}
+
+export function getApiMessagesFeed(
+  since: string,
+  sessionId?: string,
+): ApiMessageFeedItem[] {
+  let query = `
+    SELECT job_id, jid, status, messages, updated_at, tenant_id
+    FROM api_jobs
+    WHERE updated_at > ?
+      AND status IN ('in_progress', 'done')
+      AND messages != '[]'
+  `;
+  const params: string[] = [since];
+
+  if (sessionId) {
+    query += ` AND jid LIKE ?`;
+    params.push(`api:%:${sessionId}`);
+  }
+
+  query += ` ORDER BY updated_at ASC`;
+
+  const rows = db.prepare(query).all(...params) as Array<{
+    job_id: string;
+    jid: string;
+    status: string;
+    messages: string | null;
+    updated_at: string;
+    tenant_id: string | null;
+  }>;
+
+  return rows.map((r) => {
+    const withoutPrefix = r.jid.slice('api:'.length); // "{userId}:{sessionId}" or "{userId}"
+    const colonIdx = withoutPrefix.indexOf(':');
+    const userId = colonIdx === -1 ? withoutPrefix : withoutPrefix.slice(0, colonIdx);
+    const sid = colonIdx === -1 ? undefined : withoutPrefix.slice(colonIdx + 1);
+    return {
+      jobId: r.job_id,
+      tenantId: r.tenant_id ?? undefined,
+      userId,
+      sessionId: sid,
+      messages: JSON.parse(r.messages || '[]'),
+      status: r.status as 'in_progress' | 'done',
+      updatedAt: r.updated_at,
+    };
+  });
 }
 
 export function deleteOldApiJobs(olderThanHours: number = 24): void {

@@ -22,7 +22,7 @@ If credentials are missing, tell the user: "GCS credentials are not configured. 
 
 ## How to upload a file and get a signed URL
 
-Write and run this script. Adjust `LOCAL_FILE`, `OBJECT_NAME`, and optionally `EXPIRY_SECONDS`.
+Copy this script EXACTLY as written — do not rewrite or paraphrase it. Only change `LOCAL_FILE`, `OBJECT_NAME`, and optionally `EXPIRY_SECONDS`. The signing logic is precise and must not be altered.
 
 ```bash
 python3 - <<'PYEOF'
@@ -117,9 +117,11 @@ credential = f'{SERVICE_ACCOUNT_EMAIL}/{datestamp}/auto/storage/goog4_request'
 signed_headers = 'host'
 
 object_path = urllib.parse.quote(OBJECT_NAME, safe='/')
+# GCS V4: credential must have @ → %40 and / → %2F (string replace, not urllib.parse.quote)
+credential_enc = credential.replace('%', '%25').replace('@', '%40').replace('/', '%2F')
 query_string = '&'.join([
     'X-Goog-Algorithm=GOOG4-RSA-SHA256',
-    f'X-Goog-Credential={urllib.parse.quote(credential)}',
+    f'X-Goog-Credential={credential_enc}',
     f'X-Goog-Date={timestamp}',
     f'X-Goog-Expires={EXPIRY_SECONDS}',
     f'X-Goog-SignedHeaders={signed_headers}',
