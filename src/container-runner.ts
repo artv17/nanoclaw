@@ -230,6 +230,18 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Mount a read-only GCP service account key so the agent can run gcloud CLI commands.
+  // Uses a dedicated SA key (not personal credentials) to limit access to read-only roles.
+  // Set GCLOUD_SA_KEY_PATH in .env to the absolute path of the key file on the host.
+  const gcloudSaKeyPath = process.env.GCLOUD_SA_KEY_PATH;
+  if (gcloudSaKeyPath && fs.existsSync(gcloudSaKeyPath)) {
+    mounts.push({
+      hostPath: gcloudSaKeyPath,
+      containerPath: '/home/node/.config/gcloud-sa.json',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -267,6 +279,11 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  // Inject GCP service account credentials path if configured
+  if (process.env.GCLOUD_SA_KEY_PATH) {
+    args.push('-e', 'GOOGLE_APPLICATION_CREDENTIALS=/home/node/.config/gcloud-sa.json');
   }
 
   // Runtime-specific args for host gateway resolution
