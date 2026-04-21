@@ -26,8 +26,11 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
+
+const { GCLOUD_SA_KEY_PATH } = readEnvFile(['GCLOUD_SA_KEY_PATH']);
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -233,7 +236,7 @@ function buildVolumeMounts(
   // Mount a read-only GCP service account key so the agent can run gcloud CLI commands.
   // Uses a dedicated SA key (not personal credentials) to limit access to read-only roles.
   // Set GCLOUD_SA_KEY_PATH in .env to the absolute path of the key file on the host.
-  const gcloudSaKeyPath = process.env.GCLOUD_SA_KEY_PATH;
+  const gcloudSaKeyPath = GCLOUD_SA_KEY_PATH;
   if (gcloudSaKeyPath && fs.existsSync(gcloudSaKeyPath)) {
     mounts.push({
       hostPath: gcloudSaKeyPath,
@@ -282,8 +285,11 @@ function buildContainerArgs(
   }
 
   // Inject GCP service account credentials path if configured
-  if (process.env.GCLOUD_SA_KEY_PATH) {
-    args.push('-e', 'GOOGLE_APPLICATION_CREDENTIALS=/home/node/.config/gcloud-sa.json');
+  if (GCLOUD_SA_KEY_PATH) {
+    args.push(
+      '-e',
+      'GOOGLE_APPLICATION_CREDENTIALS=/home/node/.config/gcloud-sa.json',
+    );
   }
 
   // Runtime-specific args for host gateway resolution
