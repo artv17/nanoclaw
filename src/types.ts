@@ -66,6 +66,7 @@ export interface ScheduledTask {
   last_result: string | null;
   status: 'active' | 'paused' | 'completed';
   created_at: string;
+  tenant_id?: string;
 }
 
 export interface TaskRunLog {

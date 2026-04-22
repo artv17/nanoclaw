@@ -168,6 +168,13 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  // Add tenant_id column to scheduled_tasks for API channel routing
+  try {
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN tenant_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
 }
 
 export function initDatabase(): void {
@@ -397,8 +404,8 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -411,7 +418,26 @@ export function createTask(
     task.next_run,
     task.status,
     task.created_at,
+    task.tenant_id ?? null,
   );
+}
+
+export function getLatestApiJobTenantForJid(jid: string): string | undefined {
+  const row = db
+    .prepare(
+      `SELECT tenant_id FROM api_jobs WHERE jid = ? AND tenant_id IS NOT NULL ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(jid) as { tenant_id: string } | undefined;
+  return row?.tenant_id;
+}
+
+export function getScheduledTaskTenantForJid(jid: string): string | undefined {
+  const row = db
+    .prepare(
+      `SELECT tenant_id FROM scheduled_tasks WHERE chat_jid = ? AND tenant_id IS NOT NULL LIMIT 1`,
+    )
+    .get(jid) as { tenant_id: string } | undefined;
+  return row?.tenant_id;
 }
 
 export function getTaskById(id: string): ScheduledTask | undefined {

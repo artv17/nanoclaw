@@ -12,6 +12,7 @@ import {
   getApiJob,
   getApiMessagesFeed,
   getPendingApiJobs,
+  getScheduledTaskTenantForJid,
 } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
@@ -84,10 +85,22 @@ export class ApiChannel implements Channel {
   async sendMessage(jid: string, text: string): Promise<void> {
     const queue = this.pendingByJid.get(jid);
     if (!queue || queue.length === 0) {
-      logger.warn(
-        { jid },
-        'API channel: sendMessage called but no pending job',
-      );
+      // Scheduled task firing on an API JID — auto-create a job so the result
+      // appears in the feed with the correct tenant_id/session_id.
+      if (jid.startsWith(JID_PREFIX)) {
+        const tenantId = getScheduledTaskTenantForJid(jid);
+        const jobId = crypto.randomUUID();
+        const now = new Date().toISOString();
+        createApiJob(jobId, jid, now, tenantId);
+        appendApiJobMessage(jobId, text);
+        finalizeApiJob(jobId);
+        logger.info(
+          { jid, jobId, tenantId },
+          'API channel: auto-created job for scheduled task result',
+        );
+      } else {
+        logger.warn({ jid }, 'API channel: sendMessage called but no pending job');
+      }
       return;
     }
     const jobId = queue[0]; // peek — don't pop until query completes
